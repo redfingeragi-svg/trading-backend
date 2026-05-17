@@ -18,7 +18,7 @@ export default async function handler(req, res) {
 
   try {
     // 100 candles for better S&R accuracy
-    const url = `https://api.binance.com/api/v3/klines?symbol=${pair}&interval=${tf}&limit=100`;
+  const url = `https://open-api.bingx.com/openApi/swap/v3/quote/klines?symbol=${pair}&interval=${tf}&limit=100`;
     const response = await fetch(url);
     if (!response.ok) {
       const err = await response.text();
