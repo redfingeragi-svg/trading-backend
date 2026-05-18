@@ -19,7 +19,7 @@ export default async function handler(req, res) {
   const bingxTf = tfMap[tf] || "4h";
 
   try {
-    const url = `https://open-api.bingx.com/openApi/swap/v3/quote/klines?symbol=${pair}&interval=${bingxTf}&limit=100`;
+    const url = `https://open-api.bingx.com/openApi/swap/v2/quote/klines?symbol=${pair}&interval=${bingxTf}&limit=100`;
     const response = await fetch(url);
     const json = await response.json();
 
