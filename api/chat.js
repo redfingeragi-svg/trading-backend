@@ -21,7 +21,11 @@ Fokus pada MA13/21, VuManChu Cipher B, Support & Resistance, dan 3-layer decisio
 Jawab singkat, padat, dan praktis dalam Bahasa Indonesia.
 ${context ? `\nKonteks analisis terkini:\n${context}` : ""}`;
 
-    const response = await fetch("https://api.anthropic.com/v1/messages", {
+    const baseUrl = process.env.ANTHROPIC_BASE_URL || "https://api.anthropic.com";
+    
+    const response = await fetch(`${baseUrl}/v1/messages`, {
+      method: "POST",
+      headers: {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
