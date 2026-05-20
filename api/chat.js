@@ -27,7 +27,7 @@ ${context ? `\nKonteks analisis terkini:\n${context}` : ""}`;
         "Authorization": `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
-        model: "deepseek-chat",
+        model: "deepseek-v4-pro",
         max_tokens: 800,
         messages: [
           { role: "system", content: systemPrompt },
