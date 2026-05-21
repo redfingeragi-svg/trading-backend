@@ -1,25 +1,29 @@
-// Contoh logika sederhana untuk Engine Backtesting
 async function runBacktest(historicalData) {
-  let balance = 1000; // Modal awal
+  let balance = 1000;
   let results = [];
 
-  for (let i = 1; i < historicalData.length; i++) {
+  for (let i = 20; i < historicalData.length - 10; i++) { // Mulai dari i=20 untuk buffer MA
     const candle = historicalData[i];
     
-    // Logika Layer 1: Cek Trend
+    // 1. Layer 1: Filter Matematis (Kecepatan Tinggi)
     const trendUp = candle.ma13 > candle.ma21 && candle.vmc_signal === 'LONG';
     
-    // Logika simulasi entry
     if (trendUp) {
-      // Simulasi eksekusi Layer 2 & 3
-      const entryPrice = candle.close;
-      const sl = entryPrice * 0.98; // SL 2%
-      const tp = entryPrice * 1.06; // TP 1:3
+      // 2. Layer 4: Hermes Agent sebagai Hakim (Filtering)
+      // Kita panggil Hermes untuk memvalidasi setup ini berdasarkan konteks history
+      const decision = await analyzeWithHermes(historicalData.slice(i-20, i)); 
       
-      // Cek apakah di masa depan harga menyentuh TP atau SL
-      const tradeResult = checkFuturePerformance(historicalData.slice(i), sl, tp);
-      balance += tradeResult.profit;
-      results.push(tradeResult);
+      if (decision.keputusan === "LONG") {
+        // 3. Layer 3: Gunakan TP/SL dari hasil analisis Hermes/S&R
+        const entryPrice = candle.close;
+        const sl = decision.eksekusi.sl; 
+        const tp = decision.eksekusi.tp;
+        
+        const tradeResult = checkFuturePerformance(historicalData.slice(i), entryPrice, sl, tp);
+        
+        balance += tradeResult.profit;
+        results.push({...tradeResult, confidence: decision.confidenceLevel});
+      }
     }
   }
   return { finalBalance: balance, stats: results };
