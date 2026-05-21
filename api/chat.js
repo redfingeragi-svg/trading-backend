@@ -1,5 +1,5 @@
-// api/chat.js — Multi-model: DeepSeek + Groq (Hermes/Llama)
-// Env vars: DEEPSEEK_API_KEY, GROQ_API_KEY
+// api/chat.js — Multi-model: DeepSeek + OpenRouter (Hermes)
+// Env vars: DEEPSEEK_API_KEY, OPENROUTER_API_KEY
 
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -24,26 +24,22 @@ ${context ? `\nKONTEKS ANALISIS:\n${context}` : ""}`;
     let text = "", modelUsed = "";
 
     if (model === "hermes") {
-      // ── GROQ — coba semua model yang tersedia ─────────────────
-      const apiKey = process.env.GROQ_API_KEY;
-      if (!apiKey) return res.status(500).json({ error: "GROQ_API_KEY not configured" });
+      // ── OPENROUTER (HERMES AGENT) ─────────────────────────────
+      const apiKey = process.env.OPENROUTER_API_KEY;
+      if (!apiKey) return res.status(500).json({ error: "OPENROUTER_API_KEY not configured" });
 
-      // List model Groq yang aktif (urutan prioritas)
-      const groqModels = [
-        "llama-3.3-70b-versatile",
-        "llama-3.1-70b-versatile",
-        "llama3-70b-8192",
-        "mixtral-8x7b-32768",
-        "gemma2-9b-it",
-        "llama3-8b-8192",
+      // List model Hermes di OpenRouter (urutan prioritas)
+      const hermesModels = [
+        "nousresearch/hermes-3-llama-3.1-405b", // Model Hermes terkuat
+        "nousresearch/hermes-2-pro-llama-3-8b", // Backup super cepat
       ];
 
       let lastError = "";
       let success = false;
 
-      for (const m of groqModels) {
+      for (const m of hermesModels) {
         try {
-          const resp = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+          const resp = await fetch("https://openrouter.ai/api/v1/chat/completions", {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
@@ -59,7 +55,7 @@ ${context ? `\nKONTEKS ANALISIS:\n${context}` : ""}`;
           const data = await resp.json();
           if (resp.ok && data.choices?.[0]?.message?.content) {
             text = data.choices[0].message.content;
-            modelUsed = `Hermes via ${m}`;
+            modelUsed = `Hermes via OpenRouter (${m})`;
             success = true;
             break;
           } else {
@@ -72,7 +68,7 @@ ${context ? `\nKONTEKS ANALISIS:\n${context}` : ""}`;
 
       if (!success) {
         return res.status(500).json({
-          error: `Groq gagal: ${lastError}. Pastikan GROQ_API_KEY valid di console.groq.com`
+          error: `OpenRouter gagal: ${lastError}. Pastikan OPENROUTER_API_KEY valid di openrouter.ai`
         });
       }
 
@@ -81,9 +77,9 @@ ${context ? `\nKONTEKS ANALISIS:\n${context}` : ""}`;
       const apiKey = process.env.DEEPSEEK_API_KEY;
       if (!apiKey) return res.status(500).json({ error: "DEEPSEEK_API_KEY not configured" });
 
-      // List model DeepSeek (coba dari yang terbaru)
+      // List model DeepSeek
       const deepseekModels = [
-        "deepseek-chat",       // DeepSeek V3 (stable, selalu tersedia)
+        "deepseek-chat",       // DeepSeek V3 (stable)
         "deepseek-reasoner",   // DeepSeek R1
       ];
 
