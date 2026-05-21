@@ -27,7 +27,7 @@ ${context ? `\nKonteks analisis terkini:\n${context}` : ""}`;
         "Authorization": `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
-        model: "deepseek-v4-pro",
+        model: "deepseek-reasoner",
         max_tokens: 800,
         messages: [
           { role: "system", content: systemPrompt },
