@@ -151,83 +151,46 @@ export default async function handler(req, res) {
   // ── GET PRICE ─────────────────────────────────────────────────
   // ── GET PRICE (AUTO SL/TP DETECTOR) ───────────────────────────
   // ── GET PRICE (AUTO SL/TP DETECTOR) ───────────────────────────
+  // ── GET PRICE (AUTO SL/TP DETECTOR) ───────────────────────────
   if (action === "price") {
-    const { symbol = "BTC" } = req.query;
-    const rawPrice = await getBingXPrice(symbol);
-    
-    // 1. PAKSA HARGA LIVE MENJADI ANGKA MATEMATIKA (Bukan Teks)
-    const currentPrice = parseFloat(rawPrice); 
+    // 1. Harga untuk ditampilkan di UI (berdasarkan koin yang dipilih di layar)
+    const { symbol = "BTC" } = req.body;
+    const currentPriceFrontend = parseFloat(await getBingXPrice(symbol));
 
-    const openPos = await supabase("positions").select("*", `&status=eq.open&coin=eq.${symbol.toUpperCase()}`);
+    // 2. Cek semua posisi yang sedang terbuka di database
+    const openPos = (await supabase("positions").select("*", "&status=eq.open")) || [];
+    
     for (const pos of openPos) {
-      const { pnlPct, pnlUsd } = calcPnl(pos.direction, pos.entry_price, currentPrice, pos.size);
+      // PERBAIKAN UTAMA: Ambil harga LIVE khusus untuk koin pada posisi ini saja!
+      const currentCoinPrice = parseFloat(await getBingXPrice(pos.coin));
+      
+      const { pnlPct, pnlUsd } = calcPnl(pos.direction, pos.entry_price, currentCoinPrice, pos.size);
       let shouldClose = false, result = null, closedBy = null;
 
-      // 2. PAKSA SL & TP DARI DATABASE MENJADI ANGKA MATEMATIKA
       const sl = parseFloat(pos.sl_price);
       const tp = parseFloat(pos.tp_price);
 
-      // Logika Hit SL (Sudah aman dari Bug String)
-      if (sl && ((pos.direction==="LONG" && currentPrice<=sl)||(pos.direction==="SHORT" && currentPrice>=sl))) {
+      // Logika Hit SL
+      if (sl && ((pos.direction==="LONG" && currentCoinPrice<=sl)||(pos.direction==="SHORT" && currentCoinPrice>=sl))) {
         shouldClose = true; result = "LOSS"; closedBy = "HIT SL ❌";
       }
-      // Logika Hit TP (Sudah aman dari Bug String)
-      if (tp && ((pos.direction==="LONG" && currentPrice>=tp)||(pos.direction==="SHORT" && currentPrice<=tp))) {
+      // Logika Hit TP
+      if (tp && ((pos.direction==="LONG" && currentCoinPrice>=tp)||(pos.direction==="SHORT" && currentCoinPrice<=tp))) {
         shouldClose = true; result = "WIN"; closedBy = "HIT TP ✅";
       }
 
+      // Jika tersentuh, tutup posisi
       if (shouldClose) {
         await supabase("positions").update({
-          status:"closed", result, close_price:currentPrice, pnl_pct:pnlPct, pnl_usd:pnlUsd,
+          status:"closed", result, close_price:currentCoinPrice, pnl_pct:pnlPct, pnl_usd:pnlUsd,
           closed_by:closedBy, close_time:new Date().toISOString()
         }, `id=eq.${pos.id}`);
         await recalcStats();
       }
     }
-    return res.status(200).json({ price: currentPrice, symbol: symbol.toUpperCase() });
-  }
-  // ── LIST ALL DATA (KIRIM KE FRONTEND) ─────────────────────────
-  if (action === "list") {
-    const [positions, statsArr, patterns] = await Promise.all([
-      supabase("positions").select("*", "&order=open_time.desc&limit=100"),
-      supabase("stats").select("*", "&id=eq.1"),
-      supabase("patterns").select("*", "&order=win_rate.desc&limit=20"),
-    ]);
-
-    // Format ulang agar terbaca oleh aplikasi React Anda
-    const formattedPositions = (positions || []).map(p => ({
-      ...p,
-      entryPrice: p.entry_price,
-      closePrice: p.close_price,
-      slPrice: p.sl_price,
-      tpPrice: p.tp_price,
-      pnlPct: p.pnl_pct,
-      pnlUsd: p.pnl_usd,
-      signalConfidence: p.signal_confidence,
-      closedBy: p.closed_by || "MANUAL" // <-- Ini yang membuat web tahu alasan tutupnya
-    }));
-
-    const rawStats = statsArr?.[0] || {};
-    const formattedStats = {
-      ...rawStats,
-      winRate: rawStats.win_rate,
-      totalPnl: rawStats.total_pnl,
-      open: rawStats.open_count
-    };
-
-    const formattedPatterns = (patterns || []).map(p => ({
-      ...p,
-      key: p.pattern_key,
-      winRate: p.win_rate,
-      avgPnl: p.avg_pnl,
-      count: p.trade_count
-    }));
-
-    return res.status(200).json({
-      positions: formattedPositions,
-      stats: formattedStats,
-      patterns: formattedPatterns,
-    });
+    
+    // Kembalikan harga UI ke Frontend
+    return res.status(200).json({ price: currentPriceFrontend, symbol: symbol.toUpperCase() });
   }
   // ── GET PATTERNS ──────────────────────────────────────────────
   if (action === "patterns") {
