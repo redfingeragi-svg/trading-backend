@@ -149,48 +149,40 @@ export default async function handler(req, res) {
   const { action } = req.query;
 
   // ── GET PRICE ─────────────────────────────────────────────────
-  // ── GET PRICE (AUTO SL/TP DETECTOR) ───────────────────────────
-  // ── GET PRICE (AUTO SL/TP DETECTOR) ───────────────────────────
-  // ── GET PRICE (AUTO SL/TP DETECTOR) ───────────────────────────
-  if (action === "price") {
-    // 1. Harga untuk ditampilkan di UI (berdasarkan koin yang dipilih di layar)
-    const { symbol = "BTC" } = req.body;
-    const currentPriceFrontend = parseFloat(await getBingXPrice(symbol));
-
-    // 2. Cek semua posisi yang sedang terbuka di database
-    const openPos = (await supabase("positions").select("*", "&status=eq.open")) || [];
+   if (action === "price") {
+    const { symbol = "BTC" } = req.query;
+    const rawPrice = await getBingXPrice(symbol);
     
+    // 1. PAKSA HARGA LIVE MENJADI ANGKA MATEMATIKA (Bukan Teks)
+    const currentPrice = parseFloat(rawPrice); 
+
+    const openPos = await supabase("positions").select("*", `&status=eq.open&coin=eq.${symbol.toUpperCase()}`);
     for (const pos of openPos) {
-      // PERBAIKAN UTAMA: Ambil harga LIVE khusus untuk koin pada posisi ini saja!
-      const currentCoinPrice = parseFloat(await getBingXPrice(pos.coin));
-      
-      const { pnlPct, pnlUsd } = calcPnl(pos.direction, pos.entry_price, currentCoinPrice, pos.size);
+      const { pnlPct, pnlUsd } = calcPnl(pos.direction, pos.entry_price, currentPrice, pos.size);
       let shouldClose = false, result = null, closedBy = null;
 
+      // 2. PAKSA SL & TP DARI DATABASE MENJADI ANGKA MATEMATIKA
       const sl = parseFloat(pos.sl_price);
       const tp = parseFloat(pos.tp_price);
 
-      // Logika Hit SL
-      if (sl && ((pos.direction==="LONG" && currentCoinPrice<=sl)||(pos.direction==="SHORT" && currentCoinPrice>=sl))) {
+      // Logika Hit SL (Sudah aman dari Bug String)
+      if (sl && ((pos.direction==="LONG" && currentPrice<=sl)||(pos.direction==="SHORT" && currentPrice>=sl))) {
         shouldClose = true; result = "LOSS"; closedBy = "HIT SL ❌";
       }
-      // Logika Hit TP
-      if (tp && ((pos.direction==="LONG" && currentCoinPrice>=tp)||(pos.direction==="SHORT" && currentCoinPrice<=tp))) {
+      // Logika Hit TP (Sudah aman dari Bug String)
+      if (tp && ((pos.direction==="LONG" && currentPrice>=tp)||(pos.direction==="SHORT" && currentPrice<=tp))) {
         shouldClose = true; result = "WIN"; closedBy = "HIT TP ✅";
       }
 
-      // Jika tersentuh, tutup posisi
       if (shouldClose) {
         await supabase("positions").update({
-          status:"closed", result, close_price:currentCoinPrice, pnl_pct:pnlPct, pnl_usd:pnlUsd,
+          status:"closed", result, close_price:currentPrice, pnl_pct:pnlPct, pnl_usd:pnlUsd,
           closed_by:closedBy, close_time:new Date().toISOString()
         }, `id=eq.${pos.id}`);
         await recalcStats();
       }
     }
-    
-    // Kembalikan harga UI ke Frontend
-    return res.status(200).json({ price: currentPriceFrontend, symbol: symbol.toUpperCase() });
+    return res.status(200).json({ price: currentPrice, symbol: symbol.toUpperCase() });
   }
   // ── GET PATTERNS ──────────────────────────────────────────────
   if (action === "patterns") {
