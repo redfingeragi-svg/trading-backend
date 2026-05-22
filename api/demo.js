@@ -149,21 +149,24 @@ export default async function handler(req, res) {
   const { action } = req.query;
 
   // ── GET PRICE ─────────────────────────────────────────────────
+  // ── GET PRICE (AUTO SL/TP DETECTOR) ───────────────────────────
   if (action === "price") {
     const { symbol = "BTC" } = req.query;
     const price = await getBingXPrice(symbol);
 
-    // Check open positions for this coin — auto SL/TP
+    // Mengecek apakah ada posisi terbuka yang menyentuh SL/TP
     const openPos = await supabase("positions").select("*", `&status=eq.open&coin=eq.${symbol.toUpperCase()}`);
     for (const pos of openPos) {
       const { pnlPct, pnlUsd } = calcPnl(pos.direction, pos.entry_price, price, pos.size);
       let shouldClose = false, result = null, closedBy = null;
 
+      // Logika Hit SL
       if (pos.sl_price && ((pos.direction==="LONG" && price<=pos.sl_price)||(pos.direction==="SHORT" && price>=pos.sl_price))) {
-        shouldClose = true; result = "LOSS"; closedBy = "SL_HIT";
+        shouldClose = true; result = "LOSS"; closedBy = "HIT SL ❌";
       }
+      // Logika Hit TP
       if (pos.tp_price && ((pos.direction==="LONG" && price>=pos.tp_price)||(pos.direction==="SHORT" && price<=pos.tp_price))) {
-        shouldClose = true; result = "WIN"; closedBy = "TP_HIT";
+        shouldClose = true; result = "WIN"; closedBy = "HIT TP ✅";
       }
 
       if (shouldClose) {
@@ -177,7 +180,7 @@ export default async function handler(req, res) {
     return res.status(200).json({ price, symbol: symbol.toUpperCase() });
   }
 
-  // ── LIST ALL DATA ─────────────────────────────────────────────
+  // ── LIST ALL DATA (KIRIM KE FRONTEND) ─────────────────────────
   if (action === "list") {
     const [positions, statsArr, patterns] = await Promise.all([
       supabase("positions").select("*", "&order=open_time.desc&limit=100"),
@@ -185,7 +188,7 @@ export default async function handler(req, res) {
       supabase("patterns").select("*", "&order=win_rate.desc&limit=20"),
     ]);
 
-    // 1. Terjemahkan format Positions untuk Frontend
+    // Format ulang agar terbaca oleh aplikasi React Anda
     const formattedPositions = (positions || []).map(p => ({
       ...p,
       entryPrice: p.entry_price,
@@ -195,10 +198,9 @@ export default async function handler(req, res) {
       pnlPct: p.pnl_pct,
       pnlUsd: p.pnl_usd,
       signalConfidence: p.signal_confidence,
-      closedBy: p.closed_by
+      closedBy: p.closed_by || "MANUAL" // <-- Ini yang membuat web tahu alasan tutupnya
     }));
 
-    // 2. Terjemahkan format Stats untuk Frontend
     const rawStats = statsArr?.[0] || {};
     const formattedStats = {
       ...rawStats,
@@ -207,7 +209,6 @@ export default async function handler(req, res) {
       open: rawStats.open_count
     };
 
-    // 3. Terjemahkan format Patterns untuk Frontend
     const formattedPatterns = (patterns || []).map(p => ({
       ...p,
       key: p.pattern_key,
@@ -222,7 +223,6 @@ export default async function handler(req, res) {
       patterns: formattedPatterns,
     });
   }
-
   // ── GET PATTERNS ──────────────────────────────────────────────
   if (action === "patterns") {
     const patterns = await extractAndSavePatterns();
