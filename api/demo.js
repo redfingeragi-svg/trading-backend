@@ -149,27 +149,30 @@ export default async function handler(req, res) {
   const { action } = req.query;
 
   // ── GET PRICE ─────────────────────────────────────────────────
-   if (action === "price") {
+  if (action === "price") {
     const { symbol = "BTC" } = req.query;
     const rawPrice = await getBingXPrice(symbol);
-    
-    // 1. PAKSA HARGA LIVE MENJADI ANGKA MATEMATIKA (Bukan Teks)
     const currentPrice = parseFloat(rawPrice); 
+
+    // --- PINTU KEAMANAN: JIKA HARGA 0/INVALID, BERHENTI DI SINI ---
+    if (!currentPrice || currentPrice <= 0) {
+       return res.status(200).json({ price: 0, symbol: symbol.toUpperCase(), status: "API_FAIL" });
+    }
+    // -------------------------------------------------------------
 
     const openPos = await supabase("positions").select("*", `&status=eq.open&coin=eq.${symbol.toUpperCase()}`);
     for (const pos of openPos) {
       const { pnlPct, pnlUsd } = calcPnl(pos.direction, pos.entry_price, currentPrice, pos.size);
       let shouldClose = false, result = null, closedBy = null;
 
-      // 2. PAKSA SL & TP DARI DATABASE MENJADI ANGKA MATEMATIKA
       const sl = parseFloat(pos.sl_price);
       const tp = parseFloat(pos.tp_price);
 
-      // Logika Hit SL (Sudah aman dari Bug String)
+      // Logika Hit SL
       if (sl && ((pos.direction==="LONG" && currentPrice<=sl)||(pos.direction==="SHORT" && currentPrice>=sl))) {
         shouldClose = true; result = "LOSS"; closedBy = "HIT SL ❌";
       }
-      // Logika Hit TP (Sudah aman dari Bug String)
+      // Logika Hit TP
       if (tp && ((pos.direction==="LONG" && currentPrice>=tp)||(pos.direction==="SHORT" && currentPrice<=tp))) {
         shouldClose = true; result = "WIN"; closedBy = "HIT TP ✅";
       }
