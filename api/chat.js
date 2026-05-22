@@ -1,4 +1,4 @@
-// api/chat.js — Multi-model: DeepSeek + OpenRouter (Hermes)
+// api/chat.js — Multi-model: DeepSeek V3 + Nous Hermes 3 via OpenRouter
 // Env vars: DEEPSEEK_API_KEY, OPENROUTER_API_KEY
 
 export default async function handler(req, res) {
@@ -12,26 +12,43 @@ export default async function handler(req, res) {
     const { messages, context, model = "deepseek" } = req.body;
     if (!messages || !Array.isArray(messages)) return res.status(400).json({ error: "messages required" });
 
-    const systemPrompt = `Kamu adalah asisten trading crypto yang ahli dalam analisis teknikal.
-Kamu membantu trader memahami sinyal dari sistem 3-layer trading:
-- Layer 1: MA13/21 + VuManChu Cipher B → menentukan arah trend
-- Layer 2: Entry 2.5% dari zona Support (LONG) atau Resistance (SHORT)
-- Layer 3: Entry 1-2% di atas support / 1-2% di bawah resistance | SL 2% di luar S&R | TP = RR 1:3
+    // ── SYSTEM PROMPTS ────────────────────────────────────────────
 
-Jawab singkat, padat, dan praktis dalam Bahasa Indonesia. Gunakan angka spesifik jika tersedia.
-${context ? `\nKONTEKS ANALISIS:\n${context}` : ""}`;
+    // DeepSeek: asisten teknikal berbasis rules 3-layer
+    const deepseekSystem = `Kamu adalah asisten trading crypto yang ahli dalam analisis teknikal.
+Kamu membantu trader memahami sinyal dari sistem indikator MA13/21, VuManChu Cipher B, dan Support/Resistance.
+Jawab singkat, padat, dan praktis dalam Bahasa Indonesia. Gunakan angka spesifik dari konteks jika tersedia.
+${context ? `\nKONTEKS ANALISIS TERKINI:\n${context}` : ""}`;
+
+    // Hermes: trader berpengalaman dengan logic natural — TIDAK ada constraint rules kaku
+    const hermesSystem = `You are Hermes, an experienced crypto futures trader with deep intuition and market wisdom.
+You analyze markets naturally — using price action, momentum, market structure, and trader psychology.
+You are NOT bound by any fixed rules or mechanical systems. You think freely and holistically.
+
+When responding:
+- Answer in Bahasa Indonesia
+- Share your genuine trader perspective — what the market is telling you
+- Consider sentiment, momentum, key levels, and context holistically
+- Be direct: give specific price levels, timing, and actionable advice
+- If something looks risky, say so bluntly
+- Draw from experience, not rigid formulas
+${context ? `\nMarket context provided by the trader:\n${context}` : ""}`;
 
     let text = "", modelUsed = "";
 
     if (model === "hermes") {
-      // ── OPENROUTER (HERMES AGENT) ─────────────────────────────
+      // ── NOUS HERMES 3 via OpenRouter ──────────────────────────
       const apiKey = process.env.OPENROUTER_API_KEY;
-      if (!apiKey) return res.status(500).json({ error: "OPENROUTER_API_KEY not configured" });
+      if (!apiKey) return res.status(500).json({
+        error: "OPENROUTER_API_KEY not configured. Daftar gratis di openrouter.ai"
+      });
 
-      // List model Hermes di OpenRouter (urutan prioritas)
+      // Model Hermes di OpenRouter (urutan prioritas)
       const hermesModels = [
-        "nousresearch/hermes-3-llama-3.1-405b", // Model Hermes terkuat
-        "nousresearch/hermes-2-pro-llama-3-8b", // Backup super cepat
+        "nousresearch/hermes-3-llama-3.1-405b",       // Hermes 3 terbesar
+        "nousresearch/hermes-3-llama-3.1-70b",         // Hermes 3 70B
+        "nousresearch/nous-hermes-2-mixtral-8x7b",     // Hermes 2 fallback
+        "meta-llama/llama-3.1-70b-instruct",           // Llama fallback
       ];
 
       let lastError = "";
@@ -44,22 +61,29 @@ ${context ? `\nKONTEKS ANALISIS:\n${context}` : ""}`;
             headers: {
               "Content-Type": "application/json",
               "Authorization": `Bearer ${apiKey}`,
+              "HTTP-Referer": "https://trading-fronted-six.vercel.app",
+              "X-Title": "Trading AI Agent",
             },
             body: JSON.stringify({
               model: m,
-              max_tokens: 700,
-              temperature: 0.3,
-              messages: [{ role: "system", content: systemPrompt }, ...messages],
+              max_tokens: 800,
+              temperature: 0.7,  // Lebih tinggi untuk Hermes agar lebih natural
+              messages: [
+                { role: "system", content: hermesSystem },
+                ...messages,
+              ],
             }),
           });
+
           const data = await resp.json();
+
           if (resp.ok && data.choices?.[0]?.message?.content) {
             text = data.choices[0].message.content;
-            modelUsed = `Hermes via OpenRouter (${m})`;
+            modelUsed = `Hermes — ${m.split("/")[1]}`;
             success = true;
             break;
           } else {
-            lastError = data.error?.message || `Model ${m} failed`;
+            lastError = data.error?.message || `${m} unavailable`;
           }
         } catch (e) {
           lastError = e.message;
@@ -73,16 +97,11 @@ ${context ? `\nKONTEKS ANALISIS:\n${context}` : ""}`;
       }
 
     } else {
-      // ── DEEPSEEK — coba model yang tersedia ───────────────────
+      // ── DEEPSEEK — technical assistant ───────────────────────
       const apiKey = process.env.DEEPSEEK_API_KEY;
       if (!apiKey) return res.status(500).json({ error: "DEEPSEEK_API_KEY not configured" });
 
-      // List model DeepSeek
-      const deepseekModels = [
-        "deepseek-chat",       // DeepSeek V3 (stable)
-        "deepseek-reasoner",   // DeepSeek R1
-      ];
-
+      const deepseekModels = ["deepseek-chat", "deepseek-reasoner"];
       let lastError = "";
       let success = false;
 
@@ -96,19 +115,24 @@ ${context ? `\nKONTEKS ANALISIS:\n${context}` : ""}`;
             },
             body: JSON.stringify({
               model: m,
-              max_tokens: 700,
+              max_tokens: 800,
               temperature: 0.3,
-              messages: [{ role: "system", content: systemPrompt }, ...messages],
+              messages: [
+                { role: "system", content: deepseekSystem },
+                ...messages,
+              ],
             }),
           });
+
           const data = await resp.json();
+
           if (resp.ok && data.choices?.[0]?.message?.content) {
             text = data.choices[0].message.content;
             modelUsed = m;
             success = true;
             break;
           } else {
-            lastError = data.error?.message || `Model ${m} failed`;
+            lastError = data.error?.message || `${m} failed`;
           }
         } catch (e) {
           lastError = e.message;
@@ -116,9 +140,7 @@ ${context ? `\nKONTEKS ANALISIS:\n${context}` : ""}`;
       }
 
       if (!success) {
-        return res.status(500).json({
-          error: `DeepSeek gagal: ${lastError}`
-        });
+        return res.status(500).json({ error: `DeepSeek gagal: ${lastError}` });
       }
     }
 
