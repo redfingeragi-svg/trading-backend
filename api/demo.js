@@ -151,45 +151,46 @@ export default async function handler(req, res) {
   // ── GET PRICE ─────────────────────────────────────────────────
   if (action === "price") {
     const { symbol = "BTC" } = req.query;
-    
-    // 1. Ambil SEMUA posisi yang terbuka (Hapus filter coin agar semua muncul)
-    const openPos = await supabase("positions").select("*", "&status=eq.open");
-    
-    // 2. Loop semua posisi yang ditemukan
+    const price = await getBingXPrice(symbol);
+
+    // Check open positions for this coin — auto SL/TP
+    const openPos = await supabase("positions").select("*", `&status=eq.open&coin=eq.${symbol.toUpperCase()}`);
     for (const pos of openPos) {
-      // Ambil harga real-time sesuai koin masing-masing posisi
-      const rawPrice = await getBingXPrice(pos.coin);
-      const currentPrice = parseFloat(rawPrice); 
-
-      // Pintu Keamanan: Skip jika API error (harga 0)
-      if (!currentPrice || currentPrice <= 0) continue;
-
-      const { pnlPct, pnlUsd } = calcPnl(pos.direction, pos.entry_price, currentPrice, pos.size);
+      const { pnlPct, pnlUsd } = calcPnl(pos.direction, pos.entry_price, price, pos.size);
       let shouldClose = false, result = null, closedBy = null;
 
-      const sl = parseFloat(pos.sl_price);
-      const tp = parseFloat(pos.tp_price);
-
-      // Logika SL/TP
-      if (sl && ((pos.direction==="LONG" && currentPrice<=sl)||(pos.direction==="SHORT" && currentPrice>=sl))) {
-        shouldClose = true; result = "LOSS"; closedBy = "HIT SL ❌";
+      if (pos.sl_price && ((pos.direction==="LONG" && price<=pos.sl_price)||(pos.direction==="SHORT" && price>=pos.sl_price))) {
+        shouldClose = true; result = "LOSS"; closedBy = "SL_HIT";
       }
-      if (tp && ((pos.direction==="LONG" && currentPrice>=tp)||(pos.direction==="SHORT" && currentPrice<=tp))) {
-        shouldClose = true; result = "WIN"; closedBy = "HIT TP ✅";
+      if (pos.tp_price && ((pos.direction==="LONG" && price>=pos.tp_price)||(pos.direction==="SHORT" && price<=pos.tp_price))) {
+        shouldClose = true; result = "WIN"; closedBy = "TP_HIT";
       }
 
       if (shouldClose) {
         await supabase("positions").update({
-          status:"closed", result, close_price:currentPrice, pnl_pct:pnlPct, pnl_usd:pnlUsd,
+          status:"closed", result, close_price:price, pnl_pct:pnlPct, pnl_usd:pnlUsd,
           closed_by:closedBy, close_time:new Date().toISOString()
         }, `id=eq.${pos.id}`);
         await recalcStats();
       }
     }
-    
-    // Return harga untuk simbol yang diminta (untuk display di UI saja)
-    return res.status(200).json({ price: parseFloat(await getBingXPrice(symbol)), symbol: symbol.toUpperCase() });
+    return res.status(200).json({ price, symbol: symbol.toUpperCase() });
   }
+
+  // ── LIST ALL DATA ─────────────────────────────────────────────
+  if (action === "list") {
+    const [positions, statsArr, patterns] = await Promise.all([
+      supabase("positions").select("*", "&order=open_time.desc&limit=100"),
+      supabase("stats").select("*", "&id=eq.1"),
+      supabase("patterns").select("*", "&order=win_rate.desc&limit=20"),
+    ]);
+    return res.status(200).json({
+      positions: positions || [],
+      stats: statsArr?.[0] || {},
+      patterns: patterns || [],
+    });
+  }
+
   // ── GET PATTERNS ──────────────────────────────────────────────
   if (action === "patterns") {
     const patterns = await extractAndSavePatterns();
