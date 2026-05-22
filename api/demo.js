@@ -149,7 +149,6 @@ export default async function handler(req, res) {
   const { action } = req.query;
 
   // ── GET PRICE ─────────────────────────────────────────────────
- // ── GET PRICE ─────────────────────────────────────────────────
   if (action === "price") {
     const { symbol = "BTC" } = req.query;
     
