@@ -184,13 +184,44 @@ export default async function handler(req, res) {
       supabase("stats").select("*", "&id=eq.1"),
       supabase("patterns").select("*", "&order=win_rate.desc&limit=20"),
     ]);
+
+    // 1. Terjemahkan format Positions untuk Frontend
+    const formattedPositions = (positions || []).map(p => ({
+      ...p,
+      entryPrice: p.entry_price,
+      closePrice: p.close_price,
+      slPrice: p.sl_price,
+      tpPrice: p.tp_price,
+      pnlPct: p.pnl_pct,
+      pnlUsd: p.pnl_usd,
+      signalConfidence: p.signal_confidence,
+      closedBy: p.closed_by
+    }));
+
+    // 2. Terjemahkan format Stats untuk Frontend
+    const rawStats = statsArr?.[0] || {};
+    const formattedStats = {
+      ...rawStats,
+      winRate: rawStats.win_rate,
+      totalPnl: rawStats.total_pnl,
+      open: rawStats.open_count
+    };
+
+    // 3. Terjemahkan format Patterns untuk Frontend
+    const formattedPatterns = (patterns || []).map(p => ({
+      ...p,
+      key: p.pattern_key,
+      winRate: p.win_rate,
+      avgPnl: p.avg_pnl,
+      count: p.trade_count
+    }));
+
     return res.status(200).json({
-      positions: positions || [],
-      stats: statsArr?.[0] || {},
-      patterns: patterns || [],
+      positions: formattedPositions,
+      stats: formattedStats,
+      patterns: formattedPatterns,
     });
   }
-
   // ── GET PATTERNS ──────────────────────────────────────────────
   if (action === "patterns") {
     const patterns = await extractAndSavePatterns();
