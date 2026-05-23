@@ -1,5 +1,5 @@
-// api/screener.js
-// Endpoint: POST /api/screener
+// api/screener-ai.js
+// Endpoint: POST /api/screener-ai
 // Menerima hasil scan screener, dianalisis oleh AI
 // Env vars: DEEPSEEK_API_KEY, OPENROUTER_API_KEY
 
