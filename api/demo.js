@@ -50,21 +50,32 @@ function supabase(table) {
 // ── HELPERS ───────────────────────────────────────────────────────
 async function getBingXPrice(symbol) {
   try {
+    // Pastikan format pair benar, contoh: BTC-USDT
     const pair = symbol.toUpperCase().replace(/USDT$/, "") + "-USDT";
-    const r = await fetch(`https://open-api.bingx.com/openApi/swap/v2/quote/ticker/price?symbol=${pair}`);
-    const d = await r.json();
-    return parseFloat(d.data?.price || 0);
-  } catch { return 0; }
-}
 
-function calcPnl(direction, entryPrice, currentPrice, size) {
-  const pnlPct = direction === "LONG"
-    ? ((currentPrice - entryPrice) / entryPrice) * 100
-    : ((entryPrice - currentPrice) / entryPrice) * 100;
-  return {
-    pnlPct: parseFloat(pnlPct.toFixed(4)),
-    pnlUsd: parseFloat(((pnlPct / 100) * size).toFixed(2)),
-  };
+    // MENGGUNAKAN ENDPOINT PRICE (Jauh lebih ringan & cepat daripada Klines)
+    const r = await fetch(`https://open-api.bingx.com/openApi/swap/v2/quote/price?symbol=${pair}`);
+    const d = await r.json();
+
+    // Validasi response
+    if (d && d.code === 0 && d.data && d.data.price) {
+      const price = parseFloat(d.data.price);
+      
+      // Log untuk debug di console server
+      console.log(`[BingX] Harga terbaru ${symbol}: ${price}`);
+      
+      // PASTIKAN BARIS INI ADA: Mengembalikan harga ke endpoint API
+      return price; 
+    }
+    
+    // Jika format API BingX berubah atau salah, catat error-nya
+    console.error(`[BingX] Data harga tidak valid untuk ${symbol}:`, JSON.stringify(d));
+  } catch(e) {
+    console.error(`[BingX] Error Fetch getBingXPrice ${symbol}:`, e.message);
+  }
+  
+  // Fallback return 0 jika semua di atas gagal
+  return 0; 
 }
 
 async function recalcStats() {
@@ -149,8 +160,10 @@ export default async function handler(req, res) {
   const { action } = req.query;
 
   // ── GET PRICE (AUTO SL/TP DETECTOR) ───────────────────────────
-  if (action === "price") {
-    const { symbol = "BTC" } = req.query;
+  if (action === "price" && symbol) {
+    const p = await getBingXPrice(symbol); 
+      return res.status(200).json({ price: p });
+    }
     
     // 1. Ambil harga untuk UI (hanya untuk tampilan saja)
     const uiPrice = parseFloat(await getBingXPrice(symbol));
