@@ -1,6 +1,3 @@
-import { createClient } from "@supabase/supabase-js";
-import fetch from "node-fetch";
-
 // api/demo.js — Demo Trading Engine + Supabase persistent storage
 // Env vars: SUPABASE_URL, SUPABASE_SERVICE_KEY, DEEPSEEK_API_KEY / OPENROUTER_API_KEY
 
