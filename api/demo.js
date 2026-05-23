@@ -49,12 +49,31 @@ function supabase(table) {
 
 // ── HELPERS ───────────────────────────────────────────────────────
 async function getBingXPrice(symbol) {
+  // FIX: Pakai endpoint klines (yang proven works di market.js)
+  // bukan ticker/price yang sering return 0
   try {
     const pair = symbol.toUpperCase().replace(/USDT$/, "") + "-USDT";
-    const r = await fetch(`https://open-api.bingx.com/openApi/swap/v2/quote/ticker/price?symbol=${pair}`);
+    const url = `https://open-api.bingx.com/openApi/swap/v2/quote/klines?symbol=${pair}&interval=1m&limit=1`;
+    const r = await fetch(url);
     const d = await r.json();
-    return parseFloat(d.data?.price || 0);
-  } catch { return 0; }
+    const raw = d.data || d;
+    if (!Array.isArray(raw) || raw.length === 0) {
+      console.error(`getBingXPrice empty for ${symbol}:`, JSON.stringify(d).slice(0, 200));
+      return 0;
+    }
+    const candle = raw[raw.length - 1];
+    // BingX bisa return sebagai object atau array
+    let price = 0;
+    if (typeof candle === 'object' && !Array.isArray(candle)) {
+      price = parseFloat(candle.close || candle.c || 0);
+    } else if (Array.isArray(candle)) {
+      price = parseFloat(candle[4] || 0);  // close di index 4
+    }
+    return price > 0 ? price : 0;
+  } catch (err) {
+    console.error(`getBingXPrice error for ${symbol}:`, err.message);
+    return 0;
+  }
 }
 
 function calcPnl(direction, entryPrice, currentPrice, size) {
