@@ -1,5 +1,4 @@
 export default async function handler(req, res) {
-  // CORS setup
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
   if (req.method === "OPTIONS") return res.status(200).end();
@@ -7,17 +6,30 @@ export default async function handler(req, res) {
   const { coin } = req.query;
   if (!coin) return res.status(400).json({ success: false, error: "Parameter 'coin' wajib diisi" });
 
-  const PROXIMITY_THRESHOLD = 0.03; // Ambang batas jarak 3%
+  const PROXIMITY_THRESHOLD = 0.03;
 
   try {
     const pair = coin + "-USDT";
-    
-    // Mengambil data 4H dan 1H dari BingX
-    const [res4h, res1h] = await Promise.all([
+    const [r4, r1] = await Promise.all([
       fetch(`https://open-api.bingx.com/openApi/swap/v2/quote/klines?symbol=${pair}&interval=4h&limit=100`).then(r => r.json()),
       fetch(`https://open-api.bingx.com/openApi/swap/v2/quote/klines?symbol=${pair}&interval=1h&limit=100`).then(r => r.json())
     ]);
 
+    if (!r4.data || !r1.data) return res.status(200).json({ success: true, data: null });
+
+    // Kirim data mentah ke client untuk diproses oleh logika makeDecision di frontend
+    // atau jika ingin server-side, kita gunakan hasil kalkulasi di bawah:
+    return res.status(200).json({
+      success: true,
+      data: {
+        d4: { currentPrice: r4.data[r4.data.length-1].close, candles: r4.data, ... }, // Sesuai format makeDecision
+        d1: { candles: r1.data, ... }
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+}
     // Jika data BingX kosong untuk token ini, lewati dengan aman
     if (!res4h.data || !res1h.data) return res.status(200).json({ success: true, data: null });
 
