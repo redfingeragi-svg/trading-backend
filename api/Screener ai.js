@@ -1,165 +1,142 @@
-// api/screener-ai.js
-// Endpoint: POST /api/screener-ai
-// Menerima hasil scan screener, dianalisis oleh AI
-// Env vars: DEEPSEEK_API_KEY, OPENROUTER_API_KEY
-
 export default async function handler(req, res) {
+  // CORS setup
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
   if (req.method === "OPTIONS") return res.status(200).end();
-  if (req.method !== "POST") return res.status(405).json({ error: "POST required" });
+
+  const { coin } = req.query;
+  if (!coin) return res.status(400).json({ success: false, error: "Parameter 'coin' wajib diisi" });
+
+  const PROXIMITY_THRESHOLD = 0.03; // Ambang batas jarak 3%
 
   try {
-    const { results, model = "deepseek" } = req.body;
-    if (!results || !Array.isArray(results) || results.length === 0) {
-      return res.status(400).json({ error: "results array required" });
-    }
+    const pair = coin + "-USDT";
+    
+    // Mengambil data 4H dan 1H dari BingX
+    const [res4h, res1h] = await Promise.all([
+      fetch(`https://open-api.bingx.com/openApi/swap/v2/quote/klines?symbol=${pair}&interval=4h&limit=100`).then(r => r.json()),
+      fetch(`https://open-api.bingx.com/openApi/swap/v2/quote/klines?symbol=${pair}&interval=1h&limit=100`).then(r => r.json())
+    ]);
 
-    // ── Bangun konteks untuk AI ───────────────────────────────────
-    const readyCoins = results.filter(r => r.status === "READY");
-    const watchCoins = results.filter(r => r.status === "WATCH");
-    const longReady  = readyCoins.filter(r => r.signal === "LONG");
-    const shortReady = readyCoins.filter(r => r.signal === "SHORT");
+    // Jika data BingX kosong untuk token ini, lewati dengan aman
+    if (!res4h.data || !res1h.data) return res.status(200).json({ success: true, data: null });
 
-    // Format data untuk prompt
-    const formatCoin = (r) =>
-      `${r.coin} | ${r.signal} | Harga: $${r.currentPrice} | Target: $${r.targetLevel} | Jarak: ${r.distanceToTarget}% | ${r.details}`;
+    const parseCandles = (data) => data.map(c => {
+      if (typeof c === 'object' && !Array.isArray(c)) {
+        return { time: c.time, open: parseFloat(c.open), high: parseFloat(c.high), low: parseFloat(c.low), close: parseFloat(c.close), volume: parseFloat(c.vol || c.volume || 0) };
+      }
+      return { time: Number(c[0]), open: parseFloat(c[1]), high: parseFloat(c[2]), low: parseFloat(c[3]), close: parseFloat(c[4]), volume: parseFloat(c[5]) };
+    }).sort((a,b)=>a.time-b.time);
 
-    const readySection = readyCoins.length > 0
-      ? `COIN READY (${readyCoins.length} coin — sudah breakout/breakdown):\n${readyCoins.map(formatCoin).join("\n")}`
-      : "COIN READY: Tidak ada coin yang sudah breakout/breakdown.";
+    const c4 = parseCandles(res4h.data);
+    const c1 = parseCandles(res1h.data);
 
-    const watchSection = watchCoins.length > 0
-      ? `COIN WATCH (${watchCoins.length} coin — mendekati level):\n${watchCoins.slice(0,15).map(formatCoin).join("\n")}`
-      : "COIN WATCH: Tidak ada.";
+    // Skip jika history candle belum cukup
+    if (c4.length < 60 || c1.length < 72) return res.status(200).json({ success: true, data: null });
 
-    const prompt = `Kamu adalah analis trading crypto berpengalaman. Berikut adalah hasil scan ${results.length} coin dari screener breakout/breakdown:
+    const cp = c4[c4.length - 1].close;
 
-${readySection}
+    // ── HELPER MA ──
+    const calcEMA = (data, period) => {
+      const k = 2 / (period + 1);
+      let ema = [data[0]];
+      for (let j = 1; j < data.length; j++) ema.push(data[j] * k + ema[j-1] * (1 - k));
+      return ema;
+    };
 
-${watchSection}
+    const closes4h = c4.map(c => c.close);
+    const ema13 = calcEMA(closes4h, 13);
+    const ema21 = calcEMA(closes4h, 21);
+    const trendBullish4h = ema13[ema13.length - 1] > ema21[ema21.length - 1];
 
-STATISTIK SCAN:
-- Total coin dipindai: ${results.length}
-- READY (breakout terkonfirmasi): ${readyCoins.length} (LONG: ${longReady.length}, SHORT: ${shortReady.length})
-- WATCH (mendekati level): ${watchCoins.length}
+    const closes1h = c1.map(c => c.close);
+    const ema13_1h = calcEMA(closes1h, 13);
+    const ema21_1h = calcEMA(closes1h, 21);
+    const trendBullish1h = ema13_1h[ema13_1h.length - 1] > ema21_1h[ema21_1h.length - 1];
 
-Berikan analisis dalam format JSON berikut (HANYA JSON, tanpa teks lain):
-{
-  "marketOverview": "1-2 kalimat gambaran kondisi market secara keseluruhan dari hasil scan ini",
-  "marketBias": "BULLISH" | "BEARISH" | "MIXED" | "NEUTRAL",
-  "top3": [
-    {
-      "coin": "nama coin",
-      "signal": "LONG atau SHORT",
-      "reason": "alasan singkat kenapa ini terbaik (max 2 kalimat)",
-      "entry": "harga entry ideal",
-      "riskNote": "catatan risiko jika ada"
-    }
-  ],
-  "topPick": {
-    "coin": "1 coin pilihan utama",
-    "signal": "LONG atau SHORT",
-    "fullAnalysis": "analisis mendalam 3-4 kalimat: kenapa ini pilihan terbaik, kondisi teknisnya, dan apa yang perlu diperhatikan",
-    "entry": "harga entry",
-    "confidence": angka 0-100
-  },
-  "warnings": ["peringatan 1 jika ada coin dengan sinyal palsu atau risiko tinggi", "peringatan 2 jika ada"],
-  "watchlist": ["coin1", "coin2", "coin3"],
-  "summary": "1 kalimat kesimpulan actionable untuk trader"
-}`;
+    const calcSMA = (data, period) => {
+      let sma = [];
+      for(let j = period - 1; j < data.length; j++) {
+        let sum = 0;
+        for(let k = 0; k < period; k++) sum += data[j-k];
+        sma.push(sum / period);
+      }
+      return sma;
+    };
 
-    // ── Panggil AI ────────────────────────────────────────────────
-    let aiText = "";
-    let modelUsed = "";
+    const typicalPrice = c4.map(c => (c.high + c.low + c.close) / 3);
+    const esa = calcEMA(typicalPrice, 10);
+    const d = calcEMA(typicalPrice.map((tp, i) => Math.abs(tp - esa[i])), 10);
+    const ci = typicalPrice.map((tp, i) => (i < 10 || d[i] === 0) ? 0 : (tp - esa[i]) / (0.015 * d[i]));
+    const wt1 = calcEMA(ci, 21);
+    const wt2 = calcSMA(wt1, 4);
+    const lastWt1 = wt1[wt1.length - 1];
+    const lastWt2 = wt2[wt2.length - 1];
 
-    if (model === "hermes" && process.env.OPENROUTER_API_KEY) {
-      const hermesModels = [
-        "nousresearch/hermes-3-llama-3.1-405b",
-        "nousresearch/hermes-3-llama-3.1-70b",
-        "meta-llama/llama-3.1-70b-instruct",
-      ];
-      for (const m of hermesModels) {
-        try {
-          const r = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
-              "HTTP-Referer": "https://trading-fronted-six.vercel.app",
-              "X-Title": "Trading AI Screener",
-            },
-            body: JSON.stringify({
-              model: m, max_tokens: 1500, temperature: 0.4,
-              messages: [{ role: "user", content: prompt }],
-            }),
-          });
-          const d = await r.json();
-          if (r.ok && d.choices?.[0]?.message?.content) {
-            aiText = d.choices[0].message.content;
-            modelUsed = `Hermes — ${m.split("/")[1]}`;
-            break;
-          }
-        } catch {}
+    const vmcBull4 = lastWt1 > lastWt2 && lastWt1 > 0;
+    const vmcBear4 = lastWt1 < lastWt2 && lastWt1 < 0;
+
+    const l1Long = trendBullish4h && vmcBull4;
+    const l1Short = !trendBullish4h && vmcBear4;
+    const confLong = trendBullish4h && trendBullish1h && vmcBull4;
+    const confShort = !trendBullish4h && !trendBullish1h && vmcBear4;
+
+    const c1_hist = c1.slice(-72);
+    const c4_hist = c4.slice(-60);
+    const highs = [...c1_hist.map(c => c.high), ...c4_hist.map(c => c.high)];
+    const lows = [...c1_hist.map(c => c.low), ...c4_hist.map(c => c.low)];
+    
+    const strongestResistance = highs.length ? Math.max(...highs) : null;
+    const strongestSupport = lows.length ? Math.min(...lows) : null;
+
+    const volCandles = c1.slice(-21, -1);
+    const currentVolume = c1[c1.length - 1].volume || 0;
+    const smaVolume20 = volCandles.length ? volCandles.reduce((a, b) => a + b.volume, 0) / volCandles.length : 0;
+    const volumeValid = currentVolume > smaVolume20;
+
+    const isBreakoutLong = strongestResistance && cp > strongestResistance;
+    const isBreakdownShort = strongestSupport && cp < strongestSupport;
+
+    const distToRes = strongestResistance ? Math.abs(strongestResistance - cp) / strongestResistance : 1;
+    const distToSup = strongestSupport ? Math.abs(cp - strongestSupport) / strongestSupport : 1;
+
+    let status = null, signal = null, targetLevel = null, distanceToTarget = null;
+
+    if (l1Long) {
+      if (isBreakoutLong && volumeValid) {
+        status = "READY"; signal = "LONG"; targetLevel = strongestResistance; distanceToTarget = 0;
+      } else if (cp <= strongestResistance && distToRes <= PROXIMITY_THRESHOLD) {
+        status = "WATCH"; signal = "LONG"; targetLevel = strongestResistance; distanceToTarget = distToRes * 100;
+      }
+    } else if (l1Short) {
+      if (isBreakdownShort && volumeValid) {
+        status = "READY"; signal = "SHORT"; targetLevel = strongestSupport; distanceToTarget = 0;
+      } else if (cp >= strongestSupport && distToSup <= PROXIMITY_THRESHOLD) {
+        status = "WATCH"; signal = "SHORT"; targetLevel = strongestSupport; distanceToTarget = distToSup * 100;
       }
     }
 
-    // Default: DeepSeek
-    if (!aiText && process.env.DEEPSEEK_API_KEY) {
-      const r = await fetch("https://api.deepseek.com/chat/completions", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${process.env.DEEPSEEK_API_KEY}`,
-        },
-        body: JSON.stringify({
-          model: "deepseek-chat", max_tokens: 1500, temperature: 0.3,
-          messages: [{ role: "user", content: prompt }],
-        }),
-      });
-      const d = await r.json();
-      if (r.ok && d.choices?.[0]?.message?.content) {
-        aiText = d.choices[0].message.content;
-        modelUsed = "deepseek-chat";
-      }
-    }
-
-    if (!aiText) {
-      return res.status(500).json({ error: "Semua AI API gagal. Cek DEEPSEEK_API_KEY / OPENROUTER_API_KEY." });
-    }
-
-    // ── Parse JSON dari response AI ───────────────────────────────
-    let analysis = null;
-    try {
-      const clean = aiText.replace(/```json|```/g, "").trim();
-      const match = clean.match(/\{[\s\S]*\}/);
-      if (match) analysis = JSON.parse(match[0]);
-    } catch (e) {
-      // Jika parse gagal, return raw text
+    if (status) {
       return res.status(200).json({
         success: true,
-        analysis: null,
-        rawText: aiText,
-        model: modelUsed,
-        stats: { total: results.length, ready: readyCoins.length, watch: watchCoins.length, longReady: longReady.length, shortReady: shortReady.length },
+        data: {
+          coin,
+          currentPrice: cp.toFixed(4),
+          signal,
+          status,
+          targetLevel: targetLevel.toFixed(4),
+          distanceToTarget: distanceToTarget.toFixed(2),
+          details: status === "READY" 
+            ? `Breakout tervalidasi dgn Volume (${currentVolume.toFixed(0)} > SMA ${smaVolume20.toFixed(0)})`
+            : `Mendekati level target. Jarak ${distanceToTarget.toFixed(2)}%`
+        }
       });
     }
 
-    return res.status(200).json({
-      success: true,
-      analysis,
-      model: modelUsed,
-      stats: {
-        total:       results.length,
-        ready:       readyCoins.length,
-        watch:       watchCoins.length,
-        longReady:   longReady.length,
-        shortReady:  shortReady.length,
-      },
-    });
+    // Jika koin tidak memenuhi kriteria, kembalikan data null
+    return res.status(200).json({ success: true, data: null });
 
-  } catch (err) {
-    return res.status(500).json({ error: err.message });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: error.message });
   }
 }
