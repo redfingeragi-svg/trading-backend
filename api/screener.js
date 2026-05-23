@@ -1,160 +1,133 @@
+// api/screener.js — Scan satu coin, deteksi BREAKOUT atau WATCH
+// Endpoint: GET /api/screener?coin=BTC
+// Return: { success: true, data: { coin, signal, status, currentPrice, targetLevel, distanceToTarget, details } }
+
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
   if (req.method === "OPTIONS") return res.status(200).end();
-  if (req.method !== "POST") return res.status(405).json({ error: "POST required" });
+
+  const { coin } = req.query;
+  if (!coin) return res.status(400).json({ success: false, error: "coin parameter required" });
+
+  const base = coin.toUpperCase().replace(/USDT$/, "");
+  const pair = base + "-USDT";
 
   try {
-    const { results, model = "deepseek" } = req.body;
-    if (!results || !Array.isArray(results) || results.length === 0) {
-      return res.status(400).json({ error: "results array required" });
+    // ── Fetch candle 4H + 1H secara paralel ──────────────────────
+    const [r4, r1] = await Promise.all([
+      fetch(`https://open-api.bingx.com/openApi/swap/v2/quote/klines?symbol=${pair}&interval=4h&limit=100`),
+      fetch(`https://open-api.bingx.com/openApi/swap/v2/quote/klines?symbol=${pair}&interval=1h&limit=100`),
+    ]);
+    const [j4, j1] = await Promise.all([r4.json(), r1.json()]);
+
+    const raw4 = j4.data || j4;
+    const raw1 = j1.data || j1;
+
+    if (!Array.isArray(raw4) || raw4.length < 30 || !Array.isArray(raw1) || raw1.length < 30) {
+      return res.status(200).json({ success: false, error: `Insufficient candles for ${base}` });
     }
 
-    // ── Bangun konteks untuk AI ───────────────────────────────────
-    const readyCoins = results.filter(r => r.status === "READY");
-    const watchCoins = results.filter(r => r.status === "WATCH");
-    const longReady  = readyCoins.filter(r => r.signal === "LONG");
-    const shortReady = readyCoins.filter(r => r.signal === "SHORT");
-
-    // Format data untuk prompt
-    const formatCoin = (r) =>
-      `${r.coin} | ${r.signal} | Harga: $${r.currentPrice} | Target: $${r.targetLevel} | Jarak: ${r.distanceToTarget}% | ${r.details}`;
-
-    const readySection = readyCoins.length > 0
-      ? `COIN READY (${readyCoins.length} coin — sudah breakout/breakdown):\n${readyCoins.map(formatCoin).join("\n")}`
-      : "COIN READY: Tidak ada coin yang sudah breakout/breakdown.";
-
-    const watchSection = watchCoins.length > 0
-      ? `COIN WATCH (${watchCoins.length} coin — mendekati level):\n${watchCoins.slice(0,15).map(formatCoin).join("\n")}`
-      : "COIN WATCH: Tidak ada.";
-
-    const prompt = `Kamu adalah analis trading crypto berpengalaman. Berikut adalah hasil scan ${results.length} coin dari screener breakout/breakdown:
-
-${readySection}
-
-${watchSection}
-
-STATISTIK SCAN:
-- Total coin dipindai: ${results.length}
-- READY (breakout terkonfirmasi): ${readyCoins.length} (LONG: ${longReady.length}, SHORT: ${shortReady.length})
-- WATCH (mendekati level): ${watchCoins.length}
-
-Berikan analisis dalam format JSON berikut (HANYA JSON, tanpa teks lain):
-{
-  "marketOverview": "1-2 kalimat gambaran kondisi market secara keseluruhan dari hasil scan ini",
-  "marketBias": "BULLISH" | "BEARISH" | "MIXED" | "NEUTRAL",
-  "top3": [
-    {
-      "coin": "nama coin",
-      "signal": "LONG atau SHORT",
-      "reason": "alasan singkat kenapa ini terbaik (max 2 kalimat)",
-      "entry": "harga entry ideal",
-      "riskNote": "catatan risiko jika ada"
-    }
-  ],
-  "topPick": {
-    "coin": "1 coin pilihan utama",
-    "signal": "LONG atau SHORT",
-    "fullAnalysis": "analisis mendalam 3-4 kalimat: kenapa ini pilihan terbaik, kondisi teknisnya, dan apa yang perlu diperhatikan",
-    "entry": "harga entry",
-    "confidence": angka 0-100
-  },
-  "warnings": ["peringatan 1 jika ada coin dengan sinyal palsu atau risiko tinggi", "peringatan 2 jika ada"],
-  "watchlist": ["coin1", "coin2", "coin3"],
-  "summary": "1 kalimat kesimpulan actionable untuk trader"
-}`;
-
-    // ── Panggil AI ────────────────────────────────────────────────
-    let aiText = "";
-    let modelUsed = "";
-
-    if (model === "hermes" && process.env.OPENROUTER_API_KEY) {
-      const hermesModels = [
-        "nousresearch/hermes-3-llama-3.1-405b",
-        "nousresearch/hermes-3-llama-3.1-70b",
-        "meta-llama/llama-3.1-70b-instruct",
-      ];
-      for (const m of hermesModels) {
-        try {
-          const r = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
-              "HTTP-Referer": "https://trading-fronted-six.vercel.app",
-              "X-Title": "Trading AI Screener",
-            },
-            body: JSON.stringify({
-              model: m, max_tokens: 1500, temperature: 0.4,
-              messages: [{ role: "user", content: prompt }],
-            }),
-          });
-          const d = await r.json();
-          if (r.ok && d.choices?.[0]?.message?.content) {
-            aiText = d.choices[0].message.content;
-            modelUsed = `Hermes — ${m.split("/")[1]}`;
-            break;
-          }
-        } catch {}
+    // ── Normalize candles ────────────────────────────────────────
+    const parseCandles = (raw) => raw.map(c => {
+      if (typeof c === 'object' && !Array.isArray(c)) {
+        return { time: c.time, open: parseFloat(c.open), high: parseFloat(c.high), low: parseFloat(c.low), close: parseFloat(c.close), volume: parseFloat(c.vol || c.volume || 0) };
       }
-    }
+      return { time: Number(c[0]), open: parseFloat(c[1]), high: parseFloat(c[2]), low: parseFloat(c[3]), close: parseFloat(c[4]), volume: parseFloat(c[5]) };
+    }).sort((a, b) => a.time - b.time);
 
-    // Default: DeepSeek
-    if (!aiText && process.env.DEEPSEEK_API_KEY) {
-      const r = await fetch("https://api.deepseek.com/chat/completions", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${process.env.DEEPSEEK_API_KEY}`,
-        },
-        body: JSON.stringify({
-          model: "deepseek-chat", max_tokens: 1500, temperature: 0.3,
-          messages: [{ role: "user", content: prompt }],
-        }),
-      });
-      const d = await r.json();
-      if (r.ok && d.choices?.[0]?.message?.content) {
-        aiText = d.choices[0].message.content;
-        modelUsed = "deepseek-chat";
-      }
-    }
+    const c4 = parseCandles(raw4);
+    const c1 = parseCandles(raw1);
+    const currentPrice = c1[c1.length - 1].close;
 
-    if (!aiText) {
-      return res.status(500).json({ error: "Semua AI API gagal. Cek DEEPSEEK_API_KEY / OPENROUTER_API_KEY." });
-    }
+    // ── LAYER 1: Cek trend dengan EMA13/21 di 4H ─────────────────
+    const calcEMA = (data, period) => {
+      const k = 2 / (period + 1);
+      let ema = [data[0]];
+      for (let i = 1; i < data.length; i++) ema.push(data[i] * k + ema[i-1] * (1-k));
+      return ema;
+    };
+    const closes4 = c4.map(c => c.close);
+    const ema13 = calcEMA(closes4, 13);
+    const ema21 = calcEMA(closes4, 21);
+    const ma13 = ema13[ema13.length - 1];
+    const ma21 = ema21[ema21.length - 1];
+    const trendBullish = ma13 > ma21;
 
-    // ── Parse JSON dari response AI ───────────────────────────────
-    let analysis = null;
-    try {
-      const clean = aiText.replace(/```json|```/g, "").trim();
-      const match = clean.match(/\{[\s\S]*\}/);
-      if (match) analysis = JSON.parse(match[0]);
-    } catch (e) {
-      // Jika parse gagal, return raw text
-      return res.status(200).json({
-        success: true,
-        analysis: null,
-        rawText: aiText,
-        model: modelUsed,
-        stats: { total: results.length, ready: readyCoins.length, watch: watchCoins.length, longReady: longReady.length, shortReady: shortReady.length },
-      });
+    // ── LAYER 2: Cari S&R terkuat dari 1H + 4H ───────────────────
+    const last72_1h = c1.slice(-72);
+    const last60_4h = c4.slice(-60);
+    const highs = [...last72_1h.map(c => c.high), ...last60_4h.map(c => c.high)];
+    const lows  = [...last72_1h.map(c => c.low),  ...last60_4h.map(c => c.low)];
+    const strongestResistance = Math.max(...highs);
+    const strongestSupport    = Math.min(...lows);
+
+    // ── LAYER 3: Breakout / Breakdown / Watch Detection ──────────
+    const isBreakoutLong   = currentPrice > strongestResistance;
+    const isBreakdownShort = currentPrice < strongestSupport;
+
+    // Jarak ke level terdekat dalam %
+    const distToResistance = ((strongestResistance - currentPrice) / currentPrice) * 100;
+    const distToSupport    = ((currentPrice - strongestSupport) / strongestSupport) * 100;
+
+    // ── Tentukan signal dan status ───────────────────────────────
+    let signal = null, status = null, targetLevel = null, distanceToTarget = null, details = "";
+
+    if (trendBullish && isBreakoutLong) {
+      // LONG READY — sudah breakout dengan trend bullish
+      signal = "LONG";
+      status = "READY";
+      targetLevel = strongestResistance.toFixed(4);
+      distanceToTarget = "0.00";
+      details = `BREAKOUT: Harga $${currentPrice.toFixed(4)} sudah menembus resistance $${strongestResistance.toFixed(4)} dengan trend BULLISH (MA13 > MA21)`;
+
+    } else if (!trendBullish && isBreakdownShort) {
+      // SHORT READY — sudah breakdown dengan trend bearish
+      signal = "SHORT";
+      status = "READY";
+      targetLevel = strongestSupport.toFixed(4);
+      distanceToTarget = "0.00";
+      details = `BREAKDOWN: Harga $${currentPrice.toFixed(4)} sudah menembus support $${strongestSupport.toFixed(4)} dengan trend BEARISH (MA13 < MA21)`;
+
+    } else if (trendBullish && distToResistance > 0 && distToResistance <= 3) {
+      // LONG WATCH — bullish trend, dekat resistance
+      signal = "LONG";
+      status = "WATCH";
+      targetLevel = strongestResistance.toFixed(4);
+      distanceToTarget = distToResistance.toFixed(2);
+      details = `Mendekati Resistance: Harga $${currentPrice.toFixed(4)} butuh naik ${distToResistance.toFixed(2)}% untuk breakout $${strongestResistance.toFixed(4)}`;
+
+    } else if (!trendBullish && distToSupport > 0 && distToSupport <= 3) {
+      // SHORT WATCH — bearish trend, dekat support
+      signal = "SHORT";
+      status = "WATCH";
+      targetLevel = strongestSupport.toFixed(4);
+      distanceToTarget = distToSupport.toFixed(2);
+      details = `Mendekati Support: Harga $${currentPrice.toFixed(4)} butuh turun ${distToSupport.toFixed(2)}% untuk breakdown $${strongestSupport.toFixed(4)}`;
+
+    } else {
+      // Tidak memenuhi kriteria
+      return res.status(200).json({ success: false, reason: "no_signal", coin: base });
     }
 
     return res.status(200).json({
       success: true,
-      analysis,
-      model: modelUsed,
-      stats: {
-        total:       results.length,
-        ready:       readyCoins.length,
-        watch:       watchCoins.length,
-        longReady:   longReady.length,
-        shortReady:  shortReady.length,
+      data: {
+        coin: base,
+        signal,
+        status,
+        currentPrice: currentPrice.toFixed(4),
+        targetLevel,
+        distanceToTarget,
+        details,
+        trendBullish,
+        resistance: strongestResistance.toFixed(4),
+        support: strongestSupport.toFixed(4),
       },
     });
 
   } catch (err) {
-    return res.status(500).json({ error: err.message });
+    return res.status(200).json({ success: false, error: err.message, coin: base });
   }
 }
